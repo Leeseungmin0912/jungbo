@@ -1,0 +1,411 @@
+import socket
+import requests
+import threading
+import ipaddress
+import time
+import datetime
+import tkinter as tk
+import hashlib
+import re
+import webbrowser
+
+from concurrent.futures import ThreadPoolExecutor
+from tkinter import scrolledtext
+from tkinter import ttk
+from tkinter import filedialog
+from tkinter import messagebox
+
+CURRENT_VERSION = "1.0"
+
+def check_update():
+    try:
+        url = "https://raw.githubusercontent.com/username/repo/main/version.txt"
+        latest = requests.get(url, timeout=5).text.strip()
+
+        if latest != CURRENT_VERSION:
+            if tk.messagebox.askyesno(
+                "Update Available",
+                f"New version ({latest}) is available.\nDownload update?"
+            ):
+                webbrowser.open("https://github.com/Leeseungmin0912/jungbo.git")
+
+    except:
+        pass
+
+COMMON_PORTS={
+21:"FTP",22:"SSH",23:"Telnet",25:"SMTP",53:"DNS",
+80:"HTTP",110:"POP3",139:"NETBIOS",143:"IMAP",
+443:"HTTPS",445:"Microsoft-DS",3389:"RDP",
+3306:"MySQL",1521:"Oracle",5432:"PostgreSQL",
+8080:"HTTP-Alt",8443:"HTTPS-Alt"
+}
+
+scanned_ports=0
+total_ports=0
+open_port_count=0
+start_time=0
+stop_scan=False
+
+
+def log(msg,tag=None):
+
+    now=datetime.datetime.now()
+    time_str=now.strftime("%H:%M:%S")
+
+    result_box.insert(tk.END,f"[{time_str}] {msg}\n",tag)
+    result_box.see(tk.END)
+
+
+def get_service(port):
+
+    if port in COMMON_PORTS:
+        return COMMON_PORTS[port]
+
+    try:
+        return socket.getservbyport(port)
+    except:
+        return None
+
+
+def banner_grab(ip,port):
+
+    try:
+        s=socket.socket()
+        s.settimeout(1)
+        s.connect((ip,port))
+        s.send(b"HEAD / HTTP/1.1\r\nHost:test\r\n\r\n")
+        banner=s.recv(1024).decode().strip()
+        banner=banner.split("\n")[0]
+        s.close()
+        return banner
+    except:
+        return None
+
+
+def scan_ports():
+
+    global scanned_ports,total_ports,open_port_count,start_time,stop_scan
+
+    stop_scan=False
+
+    target=ip_entry.get()
+
+    try:
+        ipaddress.ip_address(target)
+    except:
+        log("Invalid IP Address","error")
+        return
+
+    start_port=int(start_entry.get())
+    end_port=int(end_entry.get())
+
+    scanned_ports=0
+    open_port_count=0
+    total_ports=end_port-start_port+1
+    start_time=time.time()
+
+    result_box.delete(1.0,tk.END)
+
+    log(f"Scanning {target}...")
+
+    def scan(port):
+
+        global scanned_ports,open_port_count
+
+        if stop_scan:
+            return
+
+        try:
+
+            s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+            s.settimeout(0.5)
+
+            result=s.connect_ex((target,port))
+
+            if result==0:
+
+                service=get_service(port)
+
+                open_port_count+=1
+
+                root.after(
+                    0,
+                    lambda:log(f"Port {port} OPEN ({service})","open")
+                )
+
+                banner=banner_grab(target,port)
+
+                if banner:
+                    root.after(
+                        0,
+                        lambda:log(f"Banner -> {banner}")
+                    )
+
+            s.close()
+
+        except:
+            pass
+
+        scanned_ports+=1
+
+
+    def run():
+
+        with ThreadPoolExecutor(max_workers=200) as executor:
+
+            for port in range(start_port,end_port+1):
+
+                if stop_scan:
+                    break
+
+                executor.submit(scan,port)
+
+    threading.Thread(target=run).start()
+
+    update_progress()
+
+
+def update_progress():
+
+    percent=int((scanned_ports/total_ports)*100)
+
+    progress["value"]=percent
+    progress_label.config(text=f"Progress: {percent}%")
+
+    if scanned_ports<total_ports and not stop_scan:
+
+        root.after(200,update_progress)
+
+    else:
+
+        finish_time=round(time.time()-start_time,2)
+
+        log("Scan Finished")
+        log(f"Open Ports Found: {open_port_count}")
+        log(f"Scan Time: {finish_time} seconds")
+
+
+def stop():
+
+    global stop_scan
+    stop_scan=True
+    log("Scan Stopped","error")
+
+
+def clear_log():
+
+    result_box.delete(1.0,tk.END)
+    log("Log Cleared")
+
+
+def save():
+
+    text=result_box.get(1.0,tk.END)
+
+    file = filedialog.asksaveasfilename(
+        defaultextension=".txt",
+        filetypes=[("Text File","*.txt")],
+        title="Save Scan Result"
+    )
+
+    if file:
+        with open(file,"w",encoding="utf-8") as f:
+            f.write(text)
+
+        log(f"Saved -> {file}")
+
+
+def scan_header():
+
+    url=url_entry.get()
+
+    if not url.startswith("http"):
+        url="http://"+url
+
+    try:
+
+        r=requests.get(url)
+
+        log("Header Scan:")
+
+        for h in r.headers:
+            log(f"{h}: {r.headers[h]}")
+
+    except:
+        log("Header Scan Failed","error")
+
+
+def vulnerability_scan():
+
+    url=url_entry.get()
+
+    if not url.startswith("http"):
+        url="http://"+url
+
+    log("Starting Vulnerability Scan...")
+
+    try:
+
+        r=requests.get(url)
+
+        headers=r.headers
+
+        security_headers=[
+        "X-Frame-Options",
+        "X-XSS-Protection",
+        "Content-Security-Policy",
+        "Strict-Transport-Security",
+        "X-Content-Type-Options"
+        ]
+
+        log("Checking Security Headers...")
+
+        for h in security_headers:
+
+            if h in headers:
+                log(f"{h} : OK")
+            else:
+                log(f"{h} : MISSING","error")
+
+        log("Vulnerability Scan Complete")
+
+    except:
+        log("Vulnerability Scan Failed","error")
+
+
+def check_password():
+
+    pw=password_entry.get()
+
+    score=0
+
+    if len(pw)>=8:
+        score+=1
+    if re.search("[A-Z]",pw):
+        score+=1
+    if re.search("[a-z]",pw):
+        score+=1
+    if re.search("[0-9]",pw):
+        score+=1
+    if re.search("[!@#$%^&*()]",pw):
+        score+=1
+
+    if score<=2:
+        result="Weak"
+        color="error"
+    elif score<=4:
+        result="Medium"
+        color=None
+    else:
+        result="Strong"
+        color="open"
+
+    log(f"Password Strength : {result}",color)
+
+
+def generate_hash():
+
+    text=hash_entry.get()
+
+    md5=hashlib.md5(text.encode()).hexdigest()
+    sha256=hashlib.sha256(text.encode()).hexdigest()
+
+    log(f"MD5 : {md5}")
+    log(f"SHA256 : {sha256}")
+
+
+root=tk.Tk()
+root.title("Cyber Security Toolkit")
+root.after(2000, check_update)
+root.geometry("900x750")
+root.configure(bg="black")
+
+title=tk.Label(root,text="Cyber Security Toolkit",
+font=("Consolas",20,"bold"),fg="#00ff00",bg="black")
+title.pack(pady=10)
+
+
+frame1=tk.LabelFrame(root,text="Port Scanner",bg="black",fg="#00ff00")
+frame1.pack(fill="x",padx=10,pady=5)
+
+tk.Label(frame1,text="Target IP",bg="black",fg="#00ff00").grid(row=0,column=0)
+
+ip_entry=tk.Entry(frame1,bg="black",fg="#00ff00")
+ip_entry.grid(row=0,column=1)
+
+tk.Label(frame1,text="Start Port",bg="black",fg="#00ff00").grid(row=0,column=2)
+start_entry=tk.Entry(frame1,width=6,bg="black",fg="#00ff00")
+start_entry.grid(row=0,column=3)
+
+tk.Label(frame1,text="End Port",bg="black",fg="#00ff00").grid(row=0,column=4)
+end_entry=tk.Entry(frame1,width=6,bg="black",fg="#00ff00")
+end_entry.grid(row=0,column=5)
+
+scan_btn=tk.Button(frame1,text="START SCAN",bg="#111111",fg="#00ff00",command=scan_ports)
+scan_btn.grid(row=0,column=6,padx=10)
+
+stop_btn=tk.Button(frame1,text="STOP",bg="#111111",fg="#ff4444",command=stop)
+stop_btn.grid(row=0,column=7)
+
+
+frame2=tk.LabelFrame(root,text="Web Scanner",bg="black",fg="#00ff00")
+frame2.pack(fill="x",padx=10,pady=5)
+
+tk.Label(frame2,text="URL",bg="black",fg="#00ff00").grid(row=0,column=0)
+
+url_entry=tk.Entry(frame2,width=40,bg="black",fg="#00ff00")
+url_entry.grid(row=0,column=1)
+
+header_btn=tk.Button(frame2,text="HEADER",bg="#111111",fg="#00ff00",command=scan_header)
+header_btn.grid(row=0,column=2)
+
+vuln_btn=tk.Button(frame2,text="VULNERABILITY",bg="#111111",fg="#00ff00",command=vulnerability_scan)
+vuln_btn.grid(row=0,column=3,padx=10)
+
+
+frame3=tk.LabelFrame(root,text="Password Strength Checker",bg="black",fg="#00ff00")
+frame3.pack(fill="x",padx=10,pady=5)
+
+password_entry=tk.Entry(frame3,width=30,bg="black",fg="#00ff00")
+password_entry.pack(side="left",padx=10)
+
+pw_btn=tk.Button(frame3,text="CHECK",bg="#111111",fg="#00ff00",command=check_password)
+pw_btn.pack(side="left")
+
+
+frame4=tk.LabelFrame(root,text="Hash Generator",bg="black",fg="#00ff00")
+frame4.pack(fill="x",padx=10,pady=5)
+
+hash_entry=tk.Entry(frame4,width=30,bg="black",fg="#00ff00")
+hash_entry.pack(side="left",padx=10)
+
+hash_btn=tk.Button(frame4,text="GENERATE HASH",bg="#111111",fg="#00ff00",command=generate_hash)
+hash_btn.pack(side="left")
+
+
+progress_label=tk.Label(root,text="Progress: 0%",bg="black",fg="#00ff00")
+progress_label.pack()
+
+progress=ttk.Progressbar(root,length=400)
+progress.pack(pady=5)
+
+
+result_box=scrolledtext.ScrolledText(
+root,bg="black",fg="#00ff00",font=("Consolas",10))
+result_box.pack(expand=True,fill="both",padx=10,pady=10)
+
+result_box.tag_config("open",foreground="#00ff00")
+result_box.tag_config("error",foreground="red")
+
+
+bottom_frame=tk.Frame(root,bg="black")
+bottom_frame.pack(fill="x")
+
+download_btn=tk.Button(bottom_frame,text="Saved",bg="#111111",fg="#00ff00",command=save)
+download_btn.pack(side="left",padx=10,pady=10)
+
+clear_btn=tk.Button(bottom_frame,text="CLEAR",bg="#111111",fg="#00ff00",command=clear_log)
+clear_btn.pack(side="left",padx=10,pady=10)
+
+
+root.mainloop()
