@@ -23,13 +23,28 @@ CURRENT_VERSION = "1.1"
 def check_update():
     try:
         url = "https://raw.githubusercontent.com/username/repo/main/version.txt"
+        exe_url = "https://raw.githubusercontent.com/Leeseungmin0912/jungbo/main/Tool.exe"
+
         latest = requests.get(url, timeout=5).text.strip()
 
         if latest != CURRENT_VERSION:
             if messagebox.askyesno("Update Available", f"New version ({latest}) available. Update?"):
-                webbrowser.open("https://github.com/Leeseungmin0912/jungbo")
-    except:
-        pass
+                
+                log("Downloading update...")
+
+                r = requests.get(exe_url)
+                with open("Tool_new.exe", "wb") as f:
+                    f.write(r.content)
+
+                log("Download complete")
+
+                # updater 실행
+                os.startfile("updater.exe")
+
+                root.destroy()
+
+    except Exception as e:
+        log("Update check failed")
 
 
 # ------------------------
