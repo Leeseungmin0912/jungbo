@@ -7,7 +7,9 @@ import datetime
 import tkinter as tk
 import hashlib
 import re
+import os
 import webbrowser
+import sys
 
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import scrolledtext
@@ -15,14 +17,14 @@ from tkinter import ttk
 from tkinter import filedialog
 from tkinter import messagebox
 
-CURRENT_VERSION = "1.1"
+CURRENT_VERSION = "1.3"
 
 # ------------------------
 # UPDATE CHECK
 # ------------------------
 def check_update():
     try:
-        url = "https://raw.githubusercontent.com/username/repo/main/version.txt"
+        url = "https://raw.githubusercontent.com/Leeseungmin0912/jungbo/main/version.txt"
         exe_url = "https://raw.githubusercontent.com/Leeseungmin0912/jungbo/main/Tool.exe"
 
         latest = requests.get(url, timeout=5).text.strip()
@@ -34,16 +36,26 @@ def check_update():
 
                 r = requests.get(exe_url)
 
-                current_dir = os.path.dirname(os.path.abspath(__file__))
+                # exe 실행 환경 대응
+                if getattr(sys, 'frozen', False):
+                    current_dir = os.path.dirname(sys.executable)
+                else:
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+
                 new_file = os.path.join(current_dir, "Tool_new.exe")
 
                 with open(new_file, "wb") as f:
                     f.write(r.content)
 
-                log("Download complete")
+                log(f"Saved to: {new_file}")
 
-                # updater 실행
-                os.startfile(os.path.join(current_dir,"updater.exe"))
+                updater_path = os.path.join(current_dir, "updater.exe")
+
+                if os.path.exists(updater_path):
+                    log("Starting updater...")
+                    os.startfile(updater_path)
+                else:
+                    log("Updater not found!", "error")
 
                 root.destroy()
 
@@ -159,6 +171,9 @@ def scan_ports():
 
 
 def update_progress():
+    if total_ports == 0:
+        return
+
     percent = int((scanned_ports / total_ports) * 100)
     progress["value"] = percent
     progress_label.config(text=f"Progress: {percent}%")
@@ -224,9 +239,6 @@ def vulnerability_scan():
         log("Scan Failed", "error")
 
 
-# ------------------------
-# NEW 기능 1️⃣ DIRECTORY BRUTE
-# ------------------------
 def dir_bruteforce():
     url = url_entry.get()
     if not url.startswith("http"):
@@ -246,9 +258,6 @@ def dir_bruteforce():
             pass
 
 
-# ------------------------
-# NEW 기능 2️⃣ SQLi TEST
-# ------------------------
 def sqli_test():
     url = url_entry.get()
     if not url.startswith("http"):
@@ -270,7 +279,7 @@ def sqli_test():
 
 
 # ------------------------
-# NEW 기능 3️⃣ IP INFO
+# IP INFO
 # ------------------------
 def ip_lookup():
     ip = ip_entry.get()
@@ -329,7 +338,7 @@ def clear_log():
 # UI
 # ------------------------
 root = tk.Tk()
-root.title("Cyber Security Toolkit v1.1")
+root.title(f"Cyber Security Toolkit v{CURRENT_VERSION}")
 root.geometry("900x750")
 root.configure(bg="black")
 
