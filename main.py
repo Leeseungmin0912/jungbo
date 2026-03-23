@@ -17,7 +17,7 @@ from tkinter import ttk
 from tkinter import filedialog
 from tkinter import messagebox
 
-CURRENT_VERSION = "1.5"
+CURRENT_VERSION = "1.6"
 
 # ------------------------
 # UPDATE CHECK
@@ -392,6 +392,30 @@ def sqli_test():
 # ------------------------
 # IP INFO
 # ------------------------
+def analyze_ip(data):
+    isp = data.get("isp", "").lower()
+    country = data.get("country", "").lower()
+
+    # 서버 / 클라우드 판단
+    if any(x in isp for x in ["amazon", "aws", "google", "cloud", "azure", "digitalocean", "vultr"]):
+        ip_type = "서버"
+        risk = "MEDIUM"
+    
+    # 개인 회선
+    elif any(x in isp for x in ["kt", "sk", "lg", "telecom"]):
+        ip_type = "개인 사용자"
+        risk = "LOW"
+    
+    else:
+        ip_type = "알 수 없음"
+        risk = "MEDIUM"
+
+    # 위험 국가 (간단 예시)
+    if country in ["russia", "china", "iran"]:
+        risk = "HIGH ⚠"
+
+    return ip_type, risk
+
 def ip_lookup():
     ip = ip_entry.get()
 
