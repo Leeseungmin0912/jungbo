@@ -147,6 +147,13 @@ COMMON_PORTS = {
     27017: "MongoDB"
 }
 
+DANGEROUS_PORTS = {
+    21: "FTP - 암호화 안됨",
+    23: "Telnet - 평문 통신",
+    445: "SMB - 랜섬웨어 위험",
+    3389: "RDP - 브루트포스 공격 위험"
+}
+
 scanned_ports = 0
 total_ports = 0
 open_port_count = 0
@@ -181,6 +188,25 @@ def banner_grab(ip, port):
         return banner
     except:
         return None
+
+def analyze_banner(banner):
+    if not banner:
+        return ""
+
+    banner = banner.lower()
+
+    if "apache" in banner:
+        return "웹 서버: Apache"
+    elif "nginx" in banner:
+        return "웹 서버: Nginx"
+    elif "openssh" in banner:
+        return "SSH 서버 감지"
+    elif "mysql" in banner:
+        return "DB: MySQL"
+    elif "iis" in banner:
+        return "웹 서버: IIS"
+    else:
+        return ""
 
 
 def scan_ports():
@@ -220,11 +246,23 @@ def scan_ports():
             if result == 0:
                 service = get_service(port)
                 open_port_count += 1
-                root.after(0, lambda: log(f"Port {port} OPEN ({service})", "open"))
+                
+                risk = DANGEROUS_PORTS.get(port, "")
+                msg = f"Port {port} OPEN ({service})"
+
+                if risk:
+                    msg += f" ⚠ {risk}"
+
+                root.after(0, lambda m=msg: log(m, "open"))
 
                 banner = banner_grab(target, port)
+
                 if banner:
-                    root.after(0, lambda: log(f"Banner -> {banner}"))
+                    root.after(0, lambda b=banner: (f"Banner -> {b}"))
+
+                    analysis = analyze_banner(banner)
+                    if analysis:
+                        root.after(0, lambda a=analysis: log(f"분석 -> {a}"))
 
             s.close()
         except:
