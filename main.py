@@ -421,12 +421,21 @@ def ip_lookup():
 
     try:
         data = requests.get(f"http://ip-api.com/json/{ip}").json()
+
         log(f"Country: {data['country']}")
         log(f"ISP: {data['isp']}")
         log(f"City: {data['city']}")
+
+        # 🔥 추가된 부분
+        ip_type, risk = analyze_ip(data)
+
+        log("")
+        log("분석:")
+        log(f"Type: {ip_type}")
+        log(f"Risk: {risk}")
+
     except:
         log("IP Lookup Failed", "error")
-
 
 # ------------------------
 # PASSWORD / HASH
