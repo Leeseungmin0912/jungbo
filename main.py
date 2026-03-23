@@ -17,7 +17,7 @@ from tkinter import ttk
 from tkinter import filedialog
 from tkinter import messagebox
 
-CURRENT_VERSION = "1.4"
+CURRENT_VERSION = "1.5"
 
 # ------------------------
 # UPDATE CHECK
