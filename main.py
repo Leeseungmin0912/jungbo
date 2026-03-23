@@ -17,7 +17,7 @@ from tkinter import ttk
 from tkinter import filedialog
 from tkinter import messagebox
 
-CURRENT_VERSION = "1.6"
+CURRENT_VERSION = "1.7"
 
 # ------------------------
 # UPDATE CHECK
@@ -158,6 +158,8 @@ scanned_ports = 0
 total_ports = 0
 open_port_count = 0
 start_time = 0
+risk_score = 0
+suspicious = False
 stop_scan = False
 
 
@@ -393,28 +395,39 @@ def sqli_test():
 # IP INFO
 # ------------------------
 def analyze_ip(data):
+    global risk_score, suspicious
+
     isp = data.get("isp", "").lower()
     country = data.get("country", "").lower()
 
-    # 서버 / 클라우드 판단
-    if any(x in isp for x in ["amazon", "aws", "google", "cloud", "azure", "digitalocean", "vultr"]):
+    risk_score = 0
+    max_score = 100
+
+ # ISP 기준 점수
+    if any(x in isp for x in ["amazon", "aws", "google", "cloud", "azure"]):
         ip_type = "서버"
-        risk = "MEDIUM"
-    
-    # 개인 회선
+        risk_score += 40
     elif any(x in isp for x in ["kt", "sk", "lg", "telecom"]):
         ip_type = "개인 사용자"
-        risk = "LOW"
-    
+        risk_score += 10
     else:
         ip_type = "알 수 없음"
-        risk = "MEDIUM"
+        risk_score += 30
 
-    # 위험 국가 (간단 예시)
+    # 국가 기준 점수
     if country in ["russia", "china", "iran"]:
-        risk = "HIGH ⚠"
+        risk_score += 50
 
-    return ip_type, risk
+    # 위험 판단
+    if risk_score >= 60:
+        suspicious = True
+        risk_level = "HIGH ⚠"
+    elif risk_score >= 30:
+        risk_level = "MEDIUM"
+    else:
+        risk_level = "LOW"
+
+    return ip_type, risk_level, risk_score, max_score
 
 def ip_lookup():
     ip = ip_entry.get()
@@ -426,13 +439,13 @@ def ip_lookup():
         log(f"ISP: {data['isp']}")
         log(f"City: {data['city']}")
 
-        # 🔥 추가된 부분
-        ip_type, risk = analyze_ip(data)
+        ip_type, risk_level, score, max_score = analyze_ip(data)
 
         log("")
         log("분석:")
         log(f"Type: {ip_type}")
-        log(f"Risk: {risk}")
+        log(f"Risk: {risk_level}")
+        log(f"Risk Score: {score} / {max_score}")
 
     except:
         log("IP Lookup Failed", "error")
