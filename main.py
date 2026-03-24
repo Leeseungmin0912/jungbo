@@ -163,8 +163,10 @@ def log(msg, tag=None):
     else:
         print(line, end="")
 
-def update_dashboard():
-    total_score = min(ip_risk_score, 100) + min(port_risk_score, 100)
+def get_total_risk_info():
+    ip_score = min(ip_risk_score, 100)
+    port_score = min(port_risk_score, 100)
+    total_score = ip_score + port_score
     max_score = 200
 
     if total_score >= 90:
@@ -177,11 +179,26 @@ def update_dashboard():
         final_level = "LOW"
         color = "#00ff00"
 
+    return {
+        "ip_score": ip_score,
+        "ip_max": 100,
+        "port_score": port_score,
+        "port_max": 100,
+        "total_score": total_score,
+        "total_max": max_score,
+        "level": final_level,
+        "color": color,
+        "suspicious": (ip_suspicious or scan_suspicious),
+    }
+
+def update_dashboard():
+    risk_info = get_total_risk_info()
+
     target_value.config(text=scan_target if scan_target else "-")
     open_ports_value.config(text=str(open_port_count))
-    risk_score_value.config(text=f"{total_score} / {max_score}")
-    suspicious_value.config(text="YES" if (ip_suspicious or scan_suspicious) else "NO")
-    final_risk_value.config(text=final_level, fg=color, bg="black")
+    risk_score_value.config(text=f"{risk_info['total_score']} / {risk_info['total_max']}")
+    suspicious_value.config(text="YES" if risk_info["suspicious"] else "NO")
+    final_risk_value.config(text=risk_info["level"], fg=risk_info["color"], bg="black")
 
 def get_service(port):
     if port in COMMON_PORTS:
@@ -297,6 +314,8 @@ def build_scan_summary():
     open_ports = sorted([item["port"] for item in scan_results])
     risky_ports = sorted([item["port"] for item in scan_results if item["risk_points"] > 0])
 
+    risk_info = get_total_risk_info()
+
     return {
         "target": scan_target,
         "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -304,12 +323,14 @@ def build_scan_summary():
         "open_ports": open_ports,
         "risky_ports": risky_ports,
         "open_port_count": open_port_count,
-        "port_risk_score": port_risk_score,
-        "ip_risk_score": ip_risk_score,
+        "port_risk_score": risk_info["port_score"],
+        "ip_risk_score": risk_info["ip_score"],
+        "total_risk_score": risk_info["total_score"],
         "ip_risk_level": ip_risk_level,
         "ip_type": ip_type,
         "ip_suspicious": ip_suspicious,
         "scan_suspicious": scan_suspicious,
+        "final_risk_level": risk_info["level"],
     }
 
 def get_default_report_filename():
@@ -339,17 +360,16 @@ def generate_html_report(auto=False, report_path=None):
                     log("리포트 저장이 취소되었습니다.", "error")
                     return False
 
-        total_score = min(ip_risk_score, 100) + min(port_risk_score, 100)
-        max_score = 200
+        risk_info = get_total_risk_info()
+        total_score = risk_info["total_score"]
+        max_score = risk_info["total_max"]
+        final_level = risk_info["level"]
 
-        if total_score >= 90:
-            final_level = "HIGH ⚠"
+        if "HIGH" in final_level:
             final_class = "high"
-        elif total_score >= 40:
-            final_level = "MEDIUM"
+        elif final_level == "MEDIUM":
             final_class = "medium"
         else:
-            final_level = "LOW"
             final_class = "low"
 
         rows = ""
@@ -371,12 +391,12 @@ def generate_html_report(auto=False, report_path=None):
             <p><b>City:</b> {html.escape(str(ip_info_data.get('city', '-')))}</p>
             <p><b>ISP:</b> {html.escape(str(ip_info_data.get('isp', '-')))}</p>
             <p><b>Type:</b> {html.escape(str(ip_type))}</p>
-            <p><b>IP Risk:</b> {html.escape(str(ip_risk_level))} ({ip_risk_score} / 100)</p>
+            <p><b>IP Risk:</b> {html.escape(str(ip_risk_level))} ({risk_info['ip_score']} / 100)</p>
             """
         else:
             ip_rows = "<p>IP 조회 정보 없음</p>"
 
-        suspicious_text = "YES" if (ip_suspicious or scan_suspicious) else "NO"
+        suspicious_text = "YES" if risk_info["suspicious"] else "NO"
 
         html_content = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -426,7 +446,9 @@ th {{
     <p><b>Scan Time:</b> {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
     <p><b>Port Range:</b> {scan_start_port} - {scan_end_port}</p>
     <p><b>Open Ports:</b> {open_port_count}</p>
-    <p><b>Risk Score:</b> {total_score} / {max_score}</p>
+    <p><b>Port Risk Score:</b> {risk_info['port_score']} / 100</p>
+    <p><b>IP Risk Score:</b> {risk_info['ip_score']} / 100</p>
+    <p><b>Total Risk Score:</b> {total_score} / {max_score}</p>
     <p><b>Suspicious:</b> {suspicious_text}</p>
     <p><b>Final Risk:</b> <span class="{final_class}">{html.escape(final_level)}</span></p>
 </div>
@@ -660,20 +682,22 @@ def update_progress():
         finish_time = round(time.time() - start_time, 2)
         progress["value"] = 100 if not stop_scan else progress["value"]
 
-        total_score = min(ip_risk_score, 100) + min(port_risk_score, 100)
+        risk_info = get_total_risk_info()
 
         log("")
         log("Scan Finished" if not stop_scan else "Scan Stopped")
         log(f"Open Ports: {open_port_count}")
-        log(f"Port Risk Score: {port_risk_score} / 100")
-        log(f"Total Risk Score: {total_score} / 200")
+        log(f"IP Risk Score: {risk_info['ip_score']} / {risk_info['ip_max']}")
+        log(f"Port Risk Score: {risk_info['port_score']} / {risk_info['port_max']}")
+        log(f"Total Risk Score: {risk_info['total_score']} / {risk_info['total_max']}")
+        log(f"Final Risk: {risk_info['level']}")
         log(f"Time: {finish_time}s")
 
         summary = build_scan_summary()
         compare_with_previous(scan_target, summary)
         save_snapshot(scan_target, summary)
 
-        if ip_suspicious or scan_suspicious:
+        if risk_info["suspicious"]:
             log("의심 항목 감지됨", "error")
             if scan_target:
                 log(f"의심 IP : {scan_target}", "error")
@@ -814,13 +838,17 @@ def ip_lookup():
 
         ip_type, ip_risk_level, ip_risk_score, max_score, ip_suspicious = analyze_ip(data)
 
+        update_dashboard()
+        risk_info = get_total_risk_info()
+
         log("")
         log("분석:")
         log(f"Type: {ip_type}")
-        log(f"Risk: {ip_risk_level}")
-        log(f"Risk Score: {ip_risk_score} / {max_score}")
-
-        update_dashboard()
+        log(f"IP Risk: {ip_risk_level}")
+        log(f"IP Risk Score: {ip_risk_score} / {max_score}")
+        log(f"Port Risk Score: {risk_info['port_score']} / {risk_info['port_max']}")
+        log(f"Total Risk Score: {risk_info['total_score']} / {risk_info['total_max']}")
+        log(f"Final Risk: {risk_info['level']}")
 
     except Exception as e:
         log(f"IP Lookup Failed: {e}", "error")
