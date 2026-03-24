@@ -18,7 +18,7 @@ from tkinter import ttk
 from tkinter import filedialog
 from tkinter import messagebox
 
-CURRENT_VERSION = "1.8"
+CURRENT_VERSION = "1.9"
 
 # ------------------------
 # GLOBAL STATE
@@ -168,8 +168,8 @@ def log(msg, tag=None):
         print(line, end="")
 
 def update_dashboard():
-    total_score = ip_risk_score + port_risk_score
-    max_score = 100 + max(port_max_score, 0)
+    total_score = min(ip_risk_score, 100) + min(port_risk_score, 100)
+    max_score = 200
 
     if total_score >= 100:
         final_level = "HIGH ⚠"
@@ -328,12 +328,12 @@ def generate_html_report(auto=False):
     filename = f"security_report_{scan_target.replace('.', '_')}_{timestamp}.html"
     report_path = os.path.join(desktop, filename)
 
-    total_score = ip_risk_score + port_risk_score
-    max_score = 100 + max(port_max_score, 0)
+    total_score = min(ip_risk_score, 100) + min(port_risk_score, 100)
+    max_score = 200
 
-    if total_score >= 100:
-        final_level = "HIGH"
-    elif total_score >= 50:
+    if total_score >= 90:
+        final_level = "HIGH ⚠"
+    elif total_score >= 40:
         final_level = "MEDIUM"
     else:
         final_level = "LOW"
@@ -560,9 +560,8 @@ def scan_ports():
                 with state_lock:
                     open_port_count += 1
                     port_risk_score += risk_points
-                    port_max_score += 30
-                    if risk_points >= 20:
-                        scan_suspicious = True
+                    if risk_points > 100:
+                        port_risk_score = 100
 
                     scan_results.append({
                         "port": port,
@@ -622,7 +621,8 @@ def update_progress():
         log("")
         log("Scan Finished" if not stop_scan else "Scan Stopped")
         log(f"Open Ports: {open_port_count}")
-        log(f"Port Risk Score: {port_risk_score} / {max(port_max_score, 0)}")
+        log(f"Port Risk Score: {port_risk_score} /100")
+        log(f"Total Risk Score: {min(ip_risk_score, 100) + min(port_risk_score, 100)} / 200")
         log(f"Time: {finish_time}s")
 
         summary = build_scan_summary()
