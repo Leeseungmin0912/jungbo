@@ -8,8 +8,9 @@ import tkinter as tk
 import hashlib
 import re
 import os
-import webbrowser
 import sys
+import json
+import html
 
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import scrolledtext
@@ -17,54 +18,39 @@ from tkinter import ttk
 from tkinter import filedialog
 from tkinter import messagebox
 
-CURRENT_VERSION = "1.7"
+CURRENT_VERSION = "1.8"
 
 # ------------------------
-# UPDATE CHECK
+# GLOBAL STATE
 # ------------------------
-def check_update():
-    try:
-        url = "https://raw.githubusercontent.com/Leeseungmin0912/jungbo/main/version.txt"
-        exe_url = "https://raw.githubusercontent.com/Leeseungmin0912/jungbo/main/Tool.exe"
+scanned_ports = 0
+total_ports = 0
+open_port_count = 0
+start_time = 0
+stop_scan = False
 
-        latest = requests.get(url, timeout=5).text.strip()
+state_lock = threading.Lock()
 
-        if latest != CURRENT_VERSION:
-            if messagebox.askyesno("Update Available", f"New version ({latest}) available. Update?"):
-                
-                log("Downloading update...")
+scan_results = []
+scan_target = ""
+scan_start_port = 0
+scan_end_port = 0
+latest_report_path = None
 
-                r = requests.get(exe_url)
+ip_info_data = None
+ip_risk_score = 0
+ip_risk_level = "UNKNOWN"
+ip_type = "알 수 없음"
+ip_suspicious = False
 
-                # exe 실행 환경 대응
-                if getattr(sys, 'frozen', False):
-                    current_dir = os.path.dirname(sys.executable)
-                else:
-                    current_dir = os.path.dirname(os.path.abspath(__file__))
+port_risk_score = 0
+port_max_score = 0
+scan_suspicious = False
 
-                new_file = os.path.join(current_dir, "Tool_new.exe")
-
-                with open(new_file, "wb") as f:
-                    f.write(r.content)
-
-                log(f"Saved to: {new_file}")
-
-                updater_path = os.path.join(current_dir, "updater.exe")
-
-                if os.path.exists(updater_path):
-                    log("Starting updater...")
-                    os.startfile(updater_path)
-                else:
-                    log("Updater not found!", "error")
-
-                root.destroy()
-
-    except Exception as e:
-        log(f"Update Error: {e}", "error")
-
+SNAPSHOT_FILE = "scan_history.json"
 
 # ------------------------
-# PORT SCANNER
+# PORT DATA
 # ------------------------
 COMMON_PORTS = {
     20: "FTP-DATA",
@@ -147,28 +133,59 @@ COMMON_PORTS = {
     27017: "MongoDB"
 }
 
+# description, points
 DANGEROUS_PORTS = {
-    21: "FTP - 암호화 안됨",
-    23: "Telnet - 평문 통신",
-    445: "SMB - 랜섬웨어 위험",
-    3389: "RDP - 브루트포스 공격 위험"
+    21: ("FTP - 암호화 안됨", 20),
+    23: ("Telnet - 평문 통신", 30),
+    445: ("SMB - 랜섬웨어 / 취약점 악용 위험", 30),
+    3389: ("RDP - 브루트포스 공격 위험", 25),
+    2375: ("Docker - 인증 없이 노출되면 위험", 30),
+    5900: ("VNC - 원격 접속 노출 주의", 20),
+    6379: ("Redis - 외부 노출 주의", 25),
+    9200: ("Elasticsearch - 데이터 노출 주의", 25),
+    27017: ("MongoDB - 외부 노출 주의", 25),
 }
 
-scanned_ports = 0
-total_ports = 0
-open_port_count = 0
-start_time = 0
-risk_score = 0
-suspicious = False
-stop_scan = False
+# ------------------------
+# UTILS
+# ------------------------
+def get_current_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
 
+def get_desktop_path():
+    return os.path.join(os.path.expanduser("~"), "Desktop")
 
 def log(msg, tag=None):
-    now = datetime.datetime.now()
-    time_str = now.strftime("%H:%M:%S")
-    result_box.insert(tk.END, f"[{time_str}] {msg}\n", tag)
-    result_box.see(tk.END)
+    time_str = datetime.datetime.now().strftime("%H:%M:%S")
+    line = f"[{time_str}] {msg}\n"
 
+    if "result_box" in globals():
+        result_box.insert(tk.END, line, tag)
+        result_box.see(tk.END)
+    else:
+        print(line, end="")
+
+def update_dashboard():
+    total_score = ip_risk_score + port_risk_score
+    max_score = 100 + max(port_max_score, 0)
+
+    if total_score >= 100:
+        final_level = "HIGH ⚠"
+        color = "red"
+    elif total_score >= 50:
+        final_level = "MEDIUM"
+        color = "#ffd700"
+    else:
+        final_level = "LOW"
+        color = "#00ff00"
+
+    target_value.config(text=scan_target if scan_target else "-")
+    open_ports_value.config(text=str(open_port_count))
+    risk_score_value.config(text=f"{total_score} / {max_score}")
+    suspicious_value.config(text="YES" if (ip_suspicious or scan_suspicious) else "NO")
+    final_risk_value.config(text=final_level, fg=color, bg="black")
 
 def get_service(port):
     if port in COMMON_PORTS:
@@ -178,16 +195,20 @@ def get_service(port):
     except:
         return "Unknown"
 
-
 def banner_grab(ip, port):
     try:
         s = socket.socket()
         s.settimeout(1)
         s.connect((ip, port))
-        s.send(b"HEAD / HTTP/1.1\r\nHost:test\r\n\r\n")
-        banner = s.recv(1024).decode().strip().split("\n")[0]
+
+        if port in [80, 8080, 8081, 8000, 8008, 8088]:
+            s.send(b"HEAD / HTTP/1.1\r\nHost:test\r\n\r\n")
+        else:
+            s.send(b"\r\n")
+
+        banner = s.recv(1024).decode(errors="ignore").strip().split("\n")[0]
         s.close()
-        return banner
+        return banner if banner else None
     except:
         return None
 
@@ -195,27 +216,293 @@ def analyze_banner(banner):
     if not banner:
         return ""
 
-    banner = banner.lower()
+    b = banner.lower()
 
-    if "apache" in banner:
+    if "apache" in b:
         return "웹 서버: Apache"
-    elif "nginx" in banner:
+    elif "nginx" in b:
         return "웹 서버: Nginx"
-    elif "openssh" in banner:
+    elif "openssh" in b:
         return "SSH 서버 감지"
-    elif "mysql" in banner:
+    elif "mysql" in b:
         return "DB: MySQL"
-    elif "iis" in banner:
+    elif "iis" in b:
         return "웹 서버: IIS"
+    elif "postgresql" in b:
+        return "DB: PostgreSQL"
     else:
         return ""
 
+def analyze_port_risk(port):
+    if port in DANGEROUS_PORTS:
+        desc, points = DANGEROUS_PORTS[port]
+        return desc, points, "HIGH"
+    elif port in [22, 80, 443, 53, 3306, 5432]:
+        return "노출 서비스 점검 필요", 5, "MEDIUM"
+    else:
+        return "", 0, "LOW"
 
+def load_snapshots():
+    path = os.path.join(get_current_dir(), SNAPSHOT_FILE)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_snapshot(target, summary):
+    data = load_snapshots()
+    data[target] = summary
+    path = os.path.join(get_current_dir(), SNAPSHOT_FILE)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def compare_with_previous(target, current_summary):
+    data = load_snapshots()
+    previous = data.get(target)
+
+    if not previous:
+        log("이전 스캔 결과가 없어 비교할 수 없습니다.")
+        return
+
+    prev_ports = set(previous.get("open_ports", []))
+    curr_ports = set(current_summary.get("open_ports", []))
+
+    added = sorted(list(curr_ports - prev_ports))
+    removed = sorted(list(prev_ports - curr_ports))
+
+    log("")
+    log("=== 이전 결과와 비교 ===")
+
+    if added:
+        log(f"새로 열린 포트: {', '.join(map(str, added))}", "error")
+    else:
+        log("새로 열린 포트: 없음")
+
+    if removed:
+        log(f"닫힌 포트: {', '.join(map(str, removed))}")
+    else:
+        log("닫힌 포트: 없음")
+
+    prev_score = previous.get("port_risk_score", 0)
+    curr_score = current_summary.get("port_risk_score", 0)
+    diff = curr_score - prev_score
+
+    if diff > 0:
+        log(f"포트 위험 점수 변화: +{diff}", "error")
+    elif diff < 0:
+        log(f"포트 위험 점수 변화: {diff}", "open")
+    else:
+        log("포트 위험 점수 변화: 0")
+
+def build_scan_summary():
+    open_ports = sorted([item["port"] for item in scan_results])
+    risky_ports = sorted([item["port"] for item in scan_results if item["risk_points"] > 0])
+
+    return {
+        "target": scan_target,
+        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "range": f"{scan_start_port}-{scan_end_port}",
+        "open_ports": open_ports,
+        "risky_ports": risky_ports,
+        "open_port_count": open_port_count,
+        "port_risk_score": port_risk_score,
+        "ip_risk_score": ip_risk_score,
+        "ip_risk_level": ip_risk_level,
+        "ip_type": ip_type,
+        "ip_suspicious": ip_suspicious,
+        "scan_suspicious": scan_suspicious,
+    }
+
+def generate_html_report(auto=False):
+    global latest_report_path
+
+    if not scan_target:
+        log("보고서를 만들 스캔 결과가 없습니다.", "error")
+        return
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    desktop = get_desktop_path()
+    filename = f"security_report_{scan_target.replace('.', '_')}_{timestamp}.html"
+    report_path = os.path.join(desktop, filename)
+
+    total_score = ip_risk_score + port_risk_score
+    max_score = 100 + max(port_max_score, 0)
+
+    if total_score >= 100:
+        final_level = "HIGH"
+    elif total_score >= 50:
+        final_level = "MEDIUM"
+    else:
+        final_level = "LOW"
+
+    rows = ""
+    for item in sorted(scan_results, key=lambda x: x["port"]):
+        rows += f"""
+        <tr>
+            <td>{item['port']}</td>
+            <td>{html.escape(item['service'])}</td>
+            <td>{item['risk_points']}</td>
+            <td>{html.escape(item['risk_desc']) if item['risk_desc'] else '-'}</td>
+            <td>{html.escape(item['banner']) if item['banner'] else '-'}</td>
+            <td>{html.escape(item['banner_analysis']) if item['banner_analysis'] else '-'}</td>
+        </tr>
+        """
+
+    ip_rows = ""
+    if ip_info_data:
+        ip_rows = f"""
+        <p><b>Country:</b> {html.escape(ip_info_data.get('country', '-'))}</p>
+        <p><b>City:</b> {html.escape(ip_info_data.get('city', '-'))}</p>
+        <p><b>ISP:</b> {html.escape(ip_info_data.get('isp', '-'))}</p>
+        <p><b>Type:</b> {html.escape(ip_type)}</p>
+        <p><b>IP Risk:</b> {html.escape(ip_risk_level)} ({ip_risk_score} / 100)</p>
+        """
+
+    suspicious_text = "YES" if (ip_suspicious or scan_suspicious) else "NO"
+
+    html_content = f"""
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Security Report</title>
+<style>
+body {{
+    font-family: Arial, sans-serif;
+    background: #0f1117;
+    color: #e6edf3;
+    margin: 30px;
+}}
+h1, h2 {{
+    color: #58a6ff;
+}}
+.card {{
+    background: #161b22;
+    padding: 18px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    border: 1px solid #30363d;
+}}
+table {{
+    width: 100%;
+    border-collapse: collapse;
+}}
+th, td {{
+    border: 1px solid #30363d;
+    padding: 10px;
+    text-align: left;
+}}
+th {{
+    background: #21262d;
+}}
+.high {{ color: #ff6b6b; font-weight: bold; }}
+.medium {{ color: #ffd166; font-weight: bold; }}
+.low {{ color: #06d6a0; font-weight: bold; }}
+</style>
+</head>
+<body>
+<h1>Cyber Security Toolkit Report</h1>
+
+<div class="card">
+    <h2>기본 정보</h2>
+    <p><b>Target:</b> {html.escape(scan_target)}</p>
+    <p><b>Scan Time:</b> {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+    <p><b>Port Range:</b> {scan_start_port} - {scan_end_port}</p>
+    <p><b>Open Ports:</b> {open_port_count}</p>
+    <p><b>Risk Score:</b> {total_score} / {max_score}</p>
+    <p><b>Suspicious:</b> {suspicious_text}</p>
+    <p><b>Final Risk:</b> <span class="{final_level.lower()}">{final_level}</span></p>
+</div>
+
+<div class="card">
+    <h2>IP 정보</h2>
+    {ip_rows if ip_rows else '<p>IP 조회 정보 없음</p>'}
+</div>
+
+<div class="card">
+    <h2>포트 분석 결과</h2>
+    <table>
+        <tr>
+            <th>Port</th>
+            <th>Service</th>
+            <th>Risk Score</th>
+            <th>Risk Description</th>
+            <th>Banner</th>
+            <th>Banner Analysis</th>
+        </tr>
+        {rows if rows else '<tr><td colspan="6">열린 포트 없음</td></tr>'}
+    </table>
+</div>
+
+</body>
+</html>
+"""
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+
+    latest_report_path = report_path
+
+    if auto:
+        log(f"자동 보고서 생성 완료: {report_path}", "open")
+    else:
+        log(f"보고서 생성 완료: {report_path}", "open")
+
+def open_last_report():
+    if latest_report_path and os.path.exists(latest_report_path):
+        os.startfile(latest_report_path)
+    else:
+        log("열 수 있는 보고서가 없습니다.", "error")
+
+# ------------------------
+# UPDATE CHECK
+# ------------------------
+def check_update():
+    try:
+        url = "https://raw.githubusercontent.com/Leeseungmin0912/jungbo/main/version.txt"
+        exe_url = "https://raw.githubusercontent.com/Leeseungmin0912/jungbo/main/Tool.exe"
+
+        latest = requests.get(url, timeout=5).text.strip()
+
+        if latest != CURRENT_VERSION:
+            if messagebox.askyesno("Update Available", f"New version ({latest}) available. Update?"):
+                log("Downloading update...")
+                r = requests.get(exe_url, timeout=15)
+
+                current_dir = get_current_dir()
+                new_file = os.path.join(current_dir, "Tool_new.exe")
+
+                with open(new_file, "wb") as f:
+                    f.write(r.content)
+
+                log(f"Saved to: {new_file}")
+
+                updater_path = os.path.join(current_dir, "updater.exe")
+
+                if os.path.exists(updater_path):
+                    log("Starting updater...")
+                    os.startfile(updater_path)
+                else:
+                    log("Updater not found!", "error")
+
+                root.destroy()
+
+    except Exception as e:
+        log(f"Update Error: {e}", "error")
+
+# ------------------------
+# PORT SCANNER
+# ------------------------
 def scan_ports():
     global scanned_ports, total_ports, open_port_count, start_time, stop_scan
+    global scan_results, scan_target, scan_start_port, scan_end_port
+    global port_risk_score, port_max_score, scan_suspicious
 
     stop_scan = False
-    target = ip_entry.get()
+    target = ip_entry.get().strip()
 
     try:
         ipaddress.ip_address(target)
@@ -223,19 +510,38 @@ def scan_ports():
         log("Invalid IP Address", "error")
         return
 
-    start_port = int(start_entry.get())
-    end_port = int(end_entry.get())
+    try:
+        start_port_value = int(start_entry.get())
+        end_port_value = int(end_entry.get())
+    except:
+        log("포트 범위를 숫자로 입력하세요.", "error")
+        return
+
+    if start_port_value < 1 or end_port_value > 65535 or start_port_value > end_port_value:
+        log("포트 범위는 1 ~ 65535 사이여야 합니다.", "error")
+        return
 
     scanned_ports = 0
     open_port_count = 0
-    total_ports = end_port - start_port + 1
+    total_ports = end_port_value - start_port_value + 1
     start_time = time.time()
 
+    scan_results = []
+    scan_target = target
+    scan_start_port = start_port_value
+    scan_end_port = end_port_value
+    port_risk_score = 0
+    port_max_score = 0
+    scan_suspicious = False
+
+    progress["value"] = 0
     result_box.delete(1.0, tk.END)
+
     log(f"Scanning {target}...")
+    update_dashboard()
 
     def scan(port):
-        global scanned_ports, open_port_count
+        global scanned_ports, open_port_count, port_risk_score, port_max_score, scan_suspicious
 
         if stop_scan:
             return
@@ -247,41 +553,57 @@ def scan_ports():
 
             if result == 0:
                 service = get_service(port)
-                open_port_count += 1
-                
-                risk = DANGEROUS_PORTS.get(port, "")
-                msg = f"Port {port} OPEN ({service})"
-
-                if risk:
-                    msg += f" ⚠ {risk}"
-
-                root.after(0, lambda m=msg: log(m, "open"))
-
+                risk_desc, risk_points, risk_level = analyze_port_risk(port)
                 banner = banner_grab(target, port)
+                banner_analysis = analyze_banner(banner)
+
+                with state_lock:
+                    open_port_count += 1
+                    port_risk_score += risk_points
+                    port_max_score += 30
+                    if risk_points >= 20:
+                        scan_suspicious = True
+
+                    scan_results.append({
+                        "port": port,
+                        "service": service,
+                        "risk_desc": risk_desc,
+                        "risk_points": risk_points,
+                        "risk_level": risk_level,
+                        "banner": banner or "",
+                        "banner_analysis": banner_analysis or ""
+                    })
+
+                msg = f"Port {port} OPEN ({service})"
+                if risk_desc:
+                    msg += f" ⚠ {risk_desc} (+{risk_points})"
+
+                root.after(0, lambda m=msg, t="open" if risk_points == 0 else "error": log(m, t))
 
                 if banner:
-                    root.after(0, lambda b=banner: (f"Banner -> {b}"))
+                    root.after(0, lambda b=banner: log(f"Banner -> {b}"))
 
-                    analysis = analyze_banner(banner)
-                    if analysis:
-                        root.after(0, lambda a=analysis: log(f"분석 -> {a}"))
+                if banner_analysis:
+                    root.after(0, lambda a=banner_analysis: log(f"분석 -> {a}"))
+
+                root.after(0, update_dashboard)
 
             s.close()
         except:
             pass
-
-        scanned_ports += 1
+        finally:
+            with state_lock:
+                scanned_ports += 1
 
     def run():
         with ThreadPoolExecutor(max_workers=200) as executor:
-            for port in range(start_port, end_port + 1):
+            for port in range(start_port_value, end_port_value + 1):
                 if stop_scan:
                     break
                 executor.submit(scan, port)
 
-    threading.Thread(target=run).start()
+    threading.Thread(target=run, daemon=True).start()
     update_progress()
-
 
 def update_progress():
     if total_ports == 0:
@@ -295,43 +617,56 @@ def update_progress():
         root.after(200, update_progress)
     else:
         finish_time = round(time.time() - start_time, 2)
-        log("Scan Finished")
+        progress["value"] = 100 if not stop_scan else progress["value"]
+
+        log("")
+        log("Scan Finished" if not stop_scan else "Scan Stopped")
         log(f"Open Ports: {open_port_count}")
+        log(f"Port Risk Score: {port_risk_score} / {max(port_max_score, 0)}")
         log(f"Time: {finish_time}s")
 
+        summary = build_scan_summary()
+        compare_with_previous(scan_target, summary)
+        save_snapshot(scan_target, summary)
+
+        if ip_suspicious or scan_suspicious:
+            log("의심 항목 감지됨", "error")
+            if scan_target:
+                log(f"의심 IP : {scan_target}", "error")
+            generate_html_report(auto=True)
+
+        update_dashboard()
 
 def stop():
     global stop_scan
     stop_scan = True
     log("Scan Stopped", "error")
 
-
 # ------------------------
 # WEB SCANNER
 # ------------------------
-def scan_header():
-    url = url_entry.get()
+def normalize_url(url):
+    url = url.strip()
     if not url.startswith("http"):
         url = "http://" + url
+    return url
 
+def scan_header():
+    url = normalize_url(url_entry.get())
     try:
-        r = requests.get(url)
+        r = requests.get(url, timeout=5)
         log("Header Scan:")
         for h in r.headers:
             log(f"{h}: {r.headers[h]}")
-    except:
-        log("Header Scan Failed", "error")
-
+    except Exception as e:
+        log(f"Header Scan Failed: {e}", "error")
 
 def vulnerability_scan():
-    url = url_entry.get()
-    if not url.startswith("http"):
-        url = "http://" + url
-
+    url = normalize_url(url_entry.get())
     log("Checking Security Headers...")
 
     try:
-        r = requests.get(url)
+        r = requests.get(url, timeout=5)
         headers = r.headers
 
         security_headers = [
@@ -344,22 +679,19 @@ def vulnerability_scan():
 
         for h in security_headers:
             if h in headers:
-                log(f"{h}: OK")
+                log(f"{h}: OK", "open")
             else:
                 log(f"{h}: MISSING", "error")
 
-    except:
-        log("Scan Failed", "error")
-
+    except Exception as e:
+        log(f"Scan Failed: {e}", "error")
 
 def dir_bruteforce():
-    url = url_entry.get()
-    if not url.startswith("http"):
-        url = "http://" + url
-
-    wordlist = ["admin","login","backup","test","dashboard","config"]
+    url = normalize_url(url_entry.get())
+    wordlist = ["admin", "login", "backup", "test", "dashboard", "config"]
 
     log("Starting Directory Scan...")
+    log("본인이 허가받은 사이트에서만 사용하세요.")
 
     for w in wordlist:
         test_url = f"{url}/{w}"
@@ -370,85 +702,84 @@ def dir_bruteforce():
         except:
             pass
 
-
 def sqli_test():
-    url = url_entry.get()
-    if not url.startswith("http"):
-        url = "http://" + url
-
+    url = normalize_url(url_entry.get())
     payload = "' OR '1'='1"
     test_url = f"{url}?id={payload}"
 
     log("Testing SQL Injection...")
+    log("본인이 허가받은 사이트에서만 사용하세요.")
 
     try:
-        r = requests.get(test_url)
-        if "error" in r.text.lower():
+        r = requests.get(test_url, timeout=5)
+        error_keywords = ["sql syntax", "mysql", "warning", "odbc", "database error", "syntax error"]
+
+        if any(k in r.text.lower() for k in error_keywords):
             log("Possible SQL Injection Detected!", "error")
         else:
-            log("No SQLi detected")
-    except:
-        log("SQL Test Failed", "error")
-
+            log("No obvious SQLi error detected")
+    except Exception as e:
+        log(f"SQL Test Failed: {e}", "error")
 
 # ------------------------
 # IP INFO
 # ------------------------
 def analyze_ip(data):
-    global risk_score, suspicious
+    isp_value = data.get("isp", "").lower()
+    country_value = data.get("country", "").lower()
 
-    isp = data.get("isp", "").lower()
-    country = data.get("country", "").lower()
-
-    risk_score = 0
+    score = 0
     max_score = 100
+    suspicious_flag = False
 
- # ISP 기준 점수
-    if any(x in isp for x in ["amazon", "aws", "google", "cloud", "azure"]):
-        ip_type = "서버"
-        risk_score += 40
-    elif any(x in isp for x in ["kt", "sk", "lg", "telecom"]):
-        ip_type = "개인 사용자"
-        risk_score += 10
+    if any(x in isp_value for x in ["amazon", "aws", "google", "cloud", "azure", "digitalocean", "ovh"]):
+        ip_type_value = "서버"
+        score += 40
+    elif any(x in isp_value for x in ["kt", "sk", "lg", "telecom"]):
+        ip_type_value = "개인 사용자"
+        score += 10
     else:
-        ip_type = "알 수 없음"
-        risk_score += 30
+        ip_type_value = "알 수 없음"
+        score += 25
 
-    # 국가 기준 점수
-    if country in ["russia", "china", "iran"]:
-        risk_score += 50
+    if country_value in ["russia", "china", "iran"]:
+        score += 50
 
-    # 위험 판단
-    if risk_score >= 60:
-        suspicious = True
-        risk_level = "HIGH ⚠"
-    elif risk_score >= 30:
-        risk_level = "MEDIUM"
+    if score >= 60:
+        suspicious_flag = True
+        risk_level_value = "HIGH ⚠"
+    elif score >= 30:
+        risk_level_value = "MEDIUM"
     else:
-        risk_level = "LOW"
+        risk_level_value = "LOW"
 
-    return ip_type, risk_level, risk_score, max_score
+    return ip_type_value, risk_level_value, score, max_score, suspicious_flag
 
 def ip_lookup():
-    ip = ip_entry.get()
+    global ip_info_data, ip_risk_score, ip_risk_level, ip_type, ip_suspicious
+
+    ip = ip_entry.get().strip()
 
     try:
-        data = requests.get(f"http://ip-api.com/json/{ip}").json()
+        data = requests.get(f"http://ip-api.com/json/{ip}", timeout=5).json()
+        ip_info_data = data
 
-        log(f"Country: {data['country']}")
-        log(f"ISP: {data['isp']}")
-        log(f"City: {data['city']}")
+        log(f"Country: {data.get('country', '-')}")
+        log(f"ISP: {data.get('isp', '-')}")
+        log(f"City: {data.get('city', '-')}")
 
-        ip_type, risk_level, score, max_score = analyze_ip(data)
+        ip_type, ip_risk_level, ip_risk_score, max_score, ip_suspicious = analyze_ip(data)
 
         log("")
         log("분석:")
         log(f"Type: {ip_type}")
-        log(f"Risk: {risk_level}")
-        log(f"Risk Score: {score} / {max_score}")
+        log(f"Risk: {ip_risk_level}")
+        log(f"Risk Score: {ip_risk_score} / {max_score}")
 
-    except:
-        log("IP Lookup Failed", "error")
+        update_dashboard()
+
+    except Exception as e:
+        log(f"IP Lookup Failed: {e}", "error")
 
 # ------------------------
 # PASSWORD / HASH
@@ -457,125 +788,240 @@ def check_password():
     pw = password_entry.get()
     score = 0
 
-    if len(pw)>=8: score+=1
-    if re.search("[A-Z]",pw): score+=1
-    if re.search("[a-z]",pw): score+=1
-    if re.search("[0-9]",pw): score+=1
-    if re.search("[!@#$%^&*()]",pw): score+=1
+    if len(pw) >= 8:
+        score += 1
+    if re.search("[A-Z]", pw):
+        score += 1
+    if re.search("[a-z]", pw):
+        score += 1
+    if re.search("[0-9]", pw):
+        score += 1
+    if re.search("[!@#$%^&*()_+\\-=\\[\\]{};':\"\\\\|,.<>/?]", pw):
+        score += 1
 
-    if score<=2:
-        log("Weak", "error")
-    elif score<=4:
-        log("Medium")
+    if score <= 2:
+        log("Password Strength: Weak", "error")
+    elif score <= 4:
+        log("Password Strength: Medium")
     else:
-        log("Strong", "open")
-
+        log("Password Strength: Strong", "open")
 
 def generate_hash():
     text = hash_entry.get()
-    log("MD5: "+hashlib.md5(text.encode()).hexdigest())
-    log("SHA256: "+hashlib.sha256(text.encode()).hexdigest())
+    log("MD5: " + hashlib.md5(text.encode()).hexdigest())
+    log("SHA256: " + hashlib.sha256(text.encode()).hexdigest())
 
+# ------------------------
+# LOG ANALYZER
+# ------------------------
+def analyze_log_file():
+    file_path = filedialog.askopenfilename(
+        title="로그 파일 선택",
+        filetypes=[("Text Files", "*.txt"), ("Log Files", "*.log"), ("All Files", "*.*")]
+    )
+
+    if not file_path:
+        return
+
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+
+        log("")
+        log("=== 로그 분석 시작 ===")
+
+        ip_matches = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", content)
+        port_matches = re.findall(r"Port\s+(\d+)\s+OPEN", content, flags=re.IGNORECASE)
+
+        ip_count = {}
+        for ip in ip_matches:
+            ip_count[ip] = ip_count.get(ip, 0) + 1
+
+        port_count = {}
+        for port in port_matches:
+            port_count[port] = port_count.get(port, 0) + 1
+
+        suspicious_keywords = [
+            "failed", "error", "denied", "unauthorized",
+            "attack", "bruteforce", "sql", "injection",
+            "warning", "forbidden"
+        ]
+
+        found_keywords = []
+        lower_content = content.lower()
+        for keyword in suspicious_keywords:
+            count = lower_content.count(keyword)
+            if count > 0:
+                found_keywords.append((keyword, count))
+
+        repeated_ips = [(ip, count) for ip, count in ip_count.items() if count >= 3]
+
+        log(f"IP 개수: {len(ip_matches)}")
+        log(f"포트 로그 개수: {len(port_matches)}")
+
+        if repeated_ips:
+            log("반복 등장 IP:", "error")
+            for ip, count in sorted(repeated_ips, key=lambda x: x[1], reverse=True)[:10]:
+                log(f"{ip} -> {count}회", "error")
+        else:
+            log("반복 등장 IP 없음")
+
+        if port_count:
+            log("자주 등장한 OPEN 포트:")
+            for port, count in sorted(port_count.items(), key=lambda x: x[1], reverse=True)[:10]:
+                log(f"Port {port} -> {count}회")
+        else:
+            log("OPEN 포트 기록 없음")
+
+        if found_keywords:
+            log("의심 키워드 탐지:", "error")
+            for keyword, count in found_keywords:
+                log(f"{keyword} -> {count}회", "error")
+        else:
+            log("의심 키워드 없음", "open")
+
+    except Exception as e:
+        log(f"로그 분석 실패: {e}", "error")
 
 # ------------------------
 # SAVE / CLEAR
 # ------------------------
 def save():
-    file = filedialog.asksaveasfilename(defaultextension=".txt")
+    file = filedialog.asksaveasfilename(
+        defaultextension=".txt",
+        filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")]
+    )
     if file:
-        with open(file,"w",encoding="utf-8") as f:
-            f.write(result_box.get(1.0,tk.END))
-
+        with open(file, "w", encoding="utf-8") as f:
+            f.write(result_box.get(1.0, tk.END))
+        log(f"로그 저장 완료: {file}", "open")
 
 def clear_log():
-    result_box.delete(1.0,tk.END)
-
+    result_box.delete(1.0, tk.END)
 
 # ------------------------
 # UI
 # ------------------------
 root = tk.Tk()
 root.title(f"Cyber Security Toolkit v{CURRENT_VERSION}")
-root.geometry("900x750")
+root.geometry("980x860")
 root.configure(bg="black")
 
-root.after(2000, check_update)
+# TITLE
+tk.Label(
+    root,
+    text="Cyber Security Toolkit",
+    font=("Consolas", 20, "bold"),
+    fg="#00ff00",
+    bg="black"
+).pack(pady=10)
 
-tk.Label(root,text="Cyber Security Toolkit",
-font=("Consolas",20,"bold"),fg="#00ff00",bg="black").pack(pady=10)
+# DASHBOARD
+dashboard = tk.LabelFrame(root, text="Dashboard", bg="black", fg="#00ff00")
+dashboard.pack(fill="x", padx=10, pady=5)
+
+tk.Label(dashboard, text="Target", bg="black", fg="#00ff00").grid(row=0, column=0, padx=10, pady=5)
+target_value = tk.Label(dashboard, text="-", bg="black", fg="white")
+target_value.grid(row=0, column=1, padx=10)
+
+tk.Label(dashboard, text="Open Ports", bg="black", fg="#00ff00").grid(row=0, column=2, padx=10, pady=5)
+open_ports_value = tk.Label(dashboard, text="0", bg="black", fg="white")
+open_ports_value.grid(row=0, column=3, padx=10)
+
+tk.Label(dashboard, text="Risk Score", bg="black", fg="#00ff00").grid(row=0, column=4, padx=10, pady=5)
+risk_score_value = tk.Label(dashboard, text="0 / 100", bg="black", fg="white")
+risk_score_value.grid(row=0, column=5, padx=10)
+
+tk.Label(dashboard, text="Suspicious", bg="black", fg="#00ff00").grid(row=1, column=0, padx=10, pady=5)
+suspicious_value = tk.Label(dashboard, text="NO", bg="black", fg="white")
+suspicious_value.grid(row=1, column=1, padx=10)
+
+tk.Label(dashboard, text="Final Risk", bg="black", fg="#00ff00").grid(row=1, column=2, padx=10, pady=5)
+final_risk_value = tk.Label(dashboard, text="LOW", bg="black", fg="#00ff00")
+final_risk_value.grid(row=1, column=3, padx=10)
 
 # PORT
-frame1 = tk.LabelFrame(root,text="Port Scanner",bg="black",fg="#00ff00")
-frame1.pack(fill="x",padx=10,pady=5)
+frame1 = tk.LabelFrame(root, text="Port Scanner", bg="black", fg="#00ff00")
+frame1.pack(fill="x", padx=10, pady=5)
 
-ip_entry = tk.Entry(frame1,bg="black",fg="#00ff00")
-ip_entry.grid(row=0,column=1)
+ip_entry = tk.Entry(frame1, bg="black", fg="#00ff00")
+ip_entry.grid(row=0, column=1, padx=5, pady=5)
 
-start_entry = tk.Entry(frame1,width=6,bg="black",fg="#00ff00")
-start_entry.grid(row=0,column=3)
+start_entry = tk.Entry(frame1, width=6, bg="black", fg="#00ff00")
+start_entry.grid(row=0, column=3, padx=5, pady=5)
 
-end_entry = tk.Entry(frame1,width=6,bg="black",fg="#00ff00")
-end_entry.grid(row=0,column=5)
+end_entry = tk.Entry(frame1, width=6, bg="black", fg="#00ff00")
+end_entry.grid(row=0, column=5, padx=5, pady=5)
 
-tk.Label(frame1,text="IP",bg="black",fg="#00ff00").grid(row=0,column=0)
-tk.Label(frame1,text="Start",bg="black",fg="#00ff00").grid(row=0,column=2)
-tk.Label(frame1,text="End",bg="black",fg="#00ff00").grid(row=0,column=4)
+tk.Label(frame1, text="IP", bg="black", fg="#00ff00").grid(row=0, column=0)
+tk.Label(frame1, text="Start", bg="black", fg="#00ff00").grid(row=0, column=2)
+tk.Label(frame1, text="End", bg="black", fg="#00ff00").grid(row=0, column=4)
 
-tk.Button(frame1,text="SCAN",command=scan_ports).grid(row=0,column=6)
-tk.Button(frame1,text="STOP",command=stop).grid(row=0,column=7)
-tk.Button(frame1,text="IP INFO",command=ip_lookup).grid(row=0,column=8)
+tk.Button(frame1, text="SCAN", command=scan_ports).grid(row=0, column=6, padx=4)
+tk.Button(frame1, text="STOP", command=stop).grid(row=0, column=7, padx=4)
+tk.Button(frame1, text="IP INFO", command=ip_lookup).grid(row=0, column=8, padx=4)
+tk.Button(frame1, text="REPORT", command=generate_html_report).grid(row=0, column=9, padx=4)
+tk.Button(frame1, text="OPEN REPORT", command=open_last_report).grid(row=0, column=10, padx=4)
 
 # WEB
-frame2 = tk.LabelFrame(root,text="Web Scanner",bg="black",fg="#00ff00")
-frame2.pack(fill="x",padx=10,pady=5)
+frame2 = tk.LabelFrame(root, text="Web Scanner", bg="black", fg="#00ff00")
+frame2.pack(fill="x", padx=10, pady=5)
 
-url_entry = tk.Entry(frame2,width=40,bg="black",fg="#00ff00")
-url_entry.grid(row=0,column=1)
+url_entry = tk.Entry(frame2, width=40, bg="black", fg="#00ff00")
+url_entry.grid(row=0, column=1, padx=5, pady=5)
 
-tk.Label(frame2,text="URL",bg="black",fg="#00ff00").grid(row=0,column=0)
+tk.Label(frame2, text="URL", bg="black", fg="#00ff00").grid(row=0, column=0)
 
-tk.Button(frame2,text="HEADER",command=scan_header).grid(row=0,column=2)
-tk.Button(frame2,text="VULN",command=vulnerability_scan).grid(row=0,column=3)
-tk.Button(frame2,text="DIR",command=dir_bruteforce).grid(row=0,column=4)
-tk.Button(frame2,text="SQLi",command=sqli_test).grid(row=0,column=5)
+tk.Button(frame2, text="HEADER", command=scan_header).grid(row=0, column=2, padx=4)
+tk.Button(frame2, text="VULN", command=vulnerability_scan).grid(row=0, column=3, padx=4)
+tk.Button(frame2, text="DIR", command=dir_bruteforce).grid(row=0, column=4, padx=4)
+tk.Button(frame2, text="SQLi", command=sqli_test).grid(row=0, column=5, padx=4)
 
 # PASSWORD
-frame3 = tk.LabelFrame(root,text="Password",bg="black",fg="#00ff00")
-frame3.pack(fill="x",padx=10,pady=5)
+frame3 = tk.LabelFrame(root, text="Password", bg="black", fg="#00ff00")
+frame3.pack(fill="x", padx=10, pady=5)
 
-password_entry = tk.Entry(frame3,bg="black",fg="#00ff00")
-password_entry.pack(side="left")
+password_entry = tk.Entry(frame3, bg="black", fg="#00ff00")
+password_entry.pack(side="left", padx=5, pady=5)
 
-tk.Button(frame3,text="CHECK",command=check_password).pack(side="left")
+tk.Button(frame3, text="CHECK", command=check_password).pack(side="left", padx=5)
 
 # HASH
-frame4 = tk.LabelFrame(root,text="Hash",bg="black",fg="#00ff00")
-frame4.pack(fill="x",padx=10,pady=5)
+frame4 = tk.LabelFrame(root, text="Hash", bg="black", fg="#00ff00")
+frame4.pack(fill="x", padx=10, pady=5)
 
-hash_entry = tk.Entry(frame4,bg="black",fg="#00ff00")
-hash_entry.pack(side="left")
+hash_entry = tk.Entry(frame4, bg="black", fg="#00ff00")
+hash_entry.pack(side="left", padx=5, pady=5)
 
-tk.Button(frame4,text="HASH",command=generate_hash).pack(side="left")
+tk.Button(frame4, text="HASH", command=generate_hash).pack(side="left", padx=5)
+
+# TOOLS
+frame5 = tk.LabelFrame(root, text="Analysis Tools", bg="black", fg="#00ff00")
+frame5.pack(fill="x", padx=10, pady=5)
+
+tk.Button(frame5, text="LOG ANALYZE", command=analyze_log_file).pack(side="left", padx=5, pady=5)
 
 # PROGRESS
-progress_label = tk.Label(root,text="Progress: 0%",bg="black",fg="#00ff00")
+progress_label = tk.Label(root, text="Progress: 0%", bg="black", fg="#00ff00")
 progress_label.pack()
 
-progress = ttk.Progressbar(root,length=400)
+progress = ttk.Progressbar(root, length=500)
 progress.pack(pady=5)
 
 # RESULT
-result_box = scrolledtext.ScrolledText(root,bg="black",fg="#00ff00")
-result_box.pack(expand=True,fill="both")
+result_box = scrolledtext.ScrolledText(root, bg="black", fg="#00ff00", insertbackground="#00ff00")
+result_box.pack(expand=True, fill="both", padx=10, pady=8)
 
-result_box.tag_config("open",foreground="#00ff00")
-result_box.tag_config("error",foreground="red")
+result_box.tag_config("open", foreground="#00ff00")
+result_box.tag_config("error", foreground="red")
 
 # BOTTOM
-bottom = tk.Frame(root,bg="black")
-bottom.pack(fill="x")
+bottom = tk.Frame(root, bg="black")
+bottom.pack(fill="x", pady=5)
 
-tk.Button(bottom,text="SAVE",command=save).pack(side="left")
-tk.Button(bottom,text="CLEAR",command=clear_log).pack(side="left")
+tk.Button(bottom, text="SAVE", command=save).pack(side="left", padx=5)
+tk.Button(bottom, text="CLEAR", command=clear_log).pack(side="left", padx=5)
 
+update_dashboard()
+root.after(2000, check_update)
 root.mainloop()
