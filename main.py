@@ -18,7 +18,7 @@ from tkinter import ttk
 from tkinter import filedialog
 from tkinter import messagebox
 
-CURRENT_VERSION = "1.9"
+CURRENT_VERSION = "1.8"
 
 # ------------------------
 # GLOBAL STATE
@@ -44,7 +44,6 @@ ip_type = "알 수 없음"
 ip_suspicious = False
 
 port_risk_score = 0
-port_max_score = 0
 scan_suspicious = False
 
 SNAPSHOT_FILE = "scan_history.json"
@@ -154,9 +153,6 @@ def get_current_dir():
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
-def get_desktop_path():
-    return os.path.join(os.path.expanduser("~"), "Desktop")
-
 def log(msg, tag=None):
     time_str = datetime.datetime.now().strftime("%H:%M:%S")
     line = f"[{time_str}] {msg}\n"
@@ -171,10 +167,10 @@ def update_dashboard():
     total_score = min(ip_risk_score, 100) + min(port_risk_score, 100)
     max_score = 200
 
-    if total_score >= 100:
+    if total_score >= 90:
         final_level = "HIGH ⚠"
         color = "red"
-    elif total_score >= 50:
+    elif total_score >= 40:
         final_level = "MEDIUM"
         color = "#ffd700"
     else:
@@ -201,7 +197,7 @@ def banner_grab(ip, port):
         s.settimeout(1)
         s.connect((ip, port))
 
-        if port in [80, 8080, 8081, 8000, 8008, 8088]:
+        if port in [80, 8080, 8081, 8000, 8008, 8088, 443, 8443]:
             s.send(b"HEAD / HTTP/1.1\r\nHost:test\r\n\r\n")
         else:
             s.send(b"\r\n")
@@ -316,55 +312,73 @@ def build_scan_summary():
         "scan_suspicious": scan_suspicious,
     }
 
-def generate_html_report(auto=False):
+def get_default_report_filename():
+    target_name = scan_target.replace(".", "_") if scan_target else "report"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"security_report_{target_name}_{timestamp}.html"
+
+def generate_html_report(auto=False, report_path=None):
     global latest_report_path
 
-    if not scan_target:
-        log("보고서를 만들 스캔 결과가 없습니다.", "error")
-        return
+    try:
+        if not scan_target:
+            log("보고서를 만들 스캔 결과가 없습니다.", "error")
+            return False
 
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    desktop = get_desktop_path()
-    filename = f"security_report_{scan_target.replace('.', '_')}_{timestamp}.html"
-    report_path = os.path.join(desktop, filename)
+        if not report_path:
+            if auto:
+                report_path = os.path.join(get_current_dir(), get_default_report_filename())
+            else:
+                report_path = filedialog.asksaveasfilename(
+                    title="리포트 저장 위치 선택",
+                    defaultextension=".html",
+                    initialfile=get_default_report_filename(),
+                    filetypes=[("HTML Files", "*.html"), ("All Files", "*.*")]
+                )
+                if not report_path:
+                    log("리포트 저장이 취소되었습니다.", "error")
+                    return False
 
-    total_score = min(ip_risk_score, 100) + min(port_risk_score, 100)
-    max_score = 200
+        total_score = min(ip_risk_score, 100) + min(port_risk_score, 100)
+        max_score = 200
 
-    if total_score >= 90:
-        final_level = "HIGH ⚠"
-    elif total_score >= 40:
-        final_level = "MEDIUM"
-    else:
-        final_level = "LOW"
+        if total_score >= 90:
+            final_level = "HIGH ⚠"
+            final_class = "high"
+        elif total_score >= 40:
+            final_level = "MEDIUM"
+            final_class = "medium"
+        else:
+            final_level = "LOW"
+            final_class = "low"
 
-    rows = ""
-    for item in sorted(scan_results, key=lambda x: x["port"]):
-        rows += f"""
-        <tr>
-            <td>{item['port']}</td>
-            <td>{html.escape(item['service'])}</td>
-            <td>{item['risk_points']}</td>
-            <td>{html.escape(item['risk_desc']) if item['risk_desc'] else '-'}</td>
-            <td>{html.escape(item['banner']) if item['banner'] else '-'}</td>
-            <td>{html.escape(item['banner_analysis']) if item['banner_analysis'] else '-'}</td>
-        </tr>
-        """
+        rows = ""
+        for item in sorted(scan_results, key=lambda x: x["port"]):
+            rows += f"""
+            <tr>
+                <td>{item['port']}</td>
+                <td>{html.escape(str(item['service']))}</td>
+                <td>{item['risk_points']}</td>
+                <td>{html.escape(str(item['risk_desc'])) if item['risk_desc'] else '-'}</td>
+                <td>{html.escape(str(item['banner'])) if item['banner'] else '-'}</td>
+                <td>{html.escape(str(item['banner_analysis'])) if item['banner_analysis'] else '-'}</td>
+            </tr>
+            """
 
-    ip_rows = ""
-    if ip_info_data:
-        ip_rows = f"""
-        <p><b>Country:</b> {html.escape(ip_info_data.get('country', '-'))}</p>
-        <p><b>City:</b> {html.escape(ip_info_data.get('city', '-'))}</p>
-        <p><b>ISP:</b> {html.escape(ip_info_data.get('isp', '-'))}</p>
-        <p><b>Type:</b> {html.escape(ip_type)}</p>
-        <p><b>IP Risk:</b> {html.escape(ip_risk_level)} ({ip_risk_score} / 100)</p>
-        """
+        if ip_info_data:
+            ip_rows = f"""
+            <p><b>Country:</b> {html.escape(str(ip_info_data.get('country', '-')))}</p>
+            <p><b>City:</b> {html.escape(str(ip_info_data.get('city', '-')))}</p>
+            <p><b>ISP:</b> {html.escape(str(ip_info_data.get('isp', '-')))}</p>
+            <p><b>Type:</b> {html.escape(str(ip_type))}</p>
+            <p><b>IP Risk:</b> {html.escape(str(ip_risk_level))} ({ip_risk_score} / 100)</p>
+            """
+        else:
+            ip_rows = "<p>IP 조회 정보 없음</p>"
 
-    suspicious_text = "YES" if (ip_suspicious or scan_suspicious) else "NO"
+        suspicious_text = "YES" if (ip_suspicious or scan_suspicious) else "NO"
 
-    html_content = f"""
-<!DOCTYPE html>
+        html_content = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -408,18 +422,18 @@ th {{
 
 <div class="card">
     <h2>기본 정보</h2>
-    <p><b>Target:</b> {html.escape(scan_target)}</p>
+    <p><b>Target:</b> {html.escape(str(scan_target))}</p>
     <p><b>Scan Time:</b> {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
     <p><b>Port Range:</b> {scan_start_port} - {scan_end_port}</p>
     <p><b>Open Ports:</b> {open_port_count}</p>
     <p><b>Risk Score:</b> {total_score} / {max_score}</p>
     <p><b>Suspicious:</b> {suspicious_text}</p>
-    <p><b>Final Risk:</b> <span class="{final_level.lower()}">{final_level}</span></p>
+    <p><b>Final Risk:</b> <span class="{final_class}">{html.escape(final_level)}</span></p>
 </div>
 
 <div class="card">
     <h2>IP 정보</h2>
-    {ip_rows if ip_rows else '<p>IP 조회 정보 없음</p>'}
+    {ip_rows}
 </div>
 
 <div class="card">
@@ -441,21 +455,46 @@ th {{
 </html>
 """
 
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(html_content)
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
 
-    latest_report_path = report_path
+        latest_report_path = report_path
 
-    if auto:
-        log(f"자동 보고서 생성 완료: {report_path}", "open")
-    else:
-        log(f"보고서 생성 완료: {report_path}", "open")
+        if auto:
+            log(f"자동 보고서 생성 완료: {report_path}", "open")
+        else:
+            log(f"보고서 생성 완료: {report_path}", "open")
+
+        return True
+
+    except Exception as e:
+        log(f"보고서 생성 실패: {e}", "error")
+        return False
 
 def open_last_report():
-    if latest_report_path and os.path.exists(latest_report_path):
+    global latest_report_path
+
+    try:
+        if latest_report_path and os.path.exists(latest_report_path):
+            os.startfile(latest_report_path)
+            log(f"보고서를 성공적으로 열었습니다: {latest_report_path}", "open")
+            return
+
+        file_path = filedialog.askopenfilename(
+            title="열 리포트 선택",
+            filetypes=[("HTML Files", "*.html"), ("All Files", "*.*")]
+        )
+
+        if not file_path:
+            log("열 리포트 선택이 취소되었습니다.", "error")
+            return
+
+        latest_report_path = file_path
         os.startfile(latest_report_path)
-    else:
-        log("열 수 있는 보고서가 없습니다.", "error")
+        log(f"보고서를 성공적으로 열었습니다: {latest_report_path}", "open")
+
+    except Exception as e:
+        log(f"보고서 열기 실패: {e}", "error")
 
 # ------------------------
 # UPDATE CHECK
@@ -499,7 +538,7 @@ def check_update():
 def scan_ports():
     global scanned_ports, total_ports, open_port_count, start_time, stop_scan
     global scan_results, scan_target, scan_start_port, scan_end_port
-    global port_risk_score, port_max_score, scan_suspicious
+    global port_risk_score, scan_suspicious
 
     stop_scan = False
     target = ip_entry.get().strip()
@@ -531,7 +570,6 @@ def scan_ports():
     scan_start_port = start_port_value
     scan_end_port = end_port_value
     port_risk_score = 0
-    port_max_score = 0
     scan_suspicious = False
 
     progress["value"] = 0
@@ -541,7 +579,7 @@ def scan_ports():
     update_dashboard()
 
     def scan(port):
-        global scanned_ports, open_port_count, port_risk_score, port_max_score, scan_suspicious
+        global scanned_ports, open_port_count, port_risk_score, scan_suspicious
 
         if stop_scan:
             return
@@ -560,8 +598,11 @@ def scan_ports():
                 with state_lock:
                     open_port_count += 1
                     port_risk_score += risk_points
-                    if risk_points > 100:
+                    if port_risk_score > 100:
                         port_risk_score = 100
+
+                    if risk_points >= 20:
+                        scan_suspicious = True
 
                     scan_results.append({
                         "port": port,
@@ -577,7 +618,8 @@ def scan_ports():
                 if risk_desc:
                     msg += f" ⚠ {risk_desc} (+{risk_points})"
 
-                root.after(0, lambda m=msg, t="open" if risk_points == 0 else "error": log(m, t))
+                log_tag = "open" if risk_points == 0 else "error"
+                root.after(0, lambda m=msg, t=log_tag: log(m, t))
 
                 if banner:
                     root.after(0, lambda b=banner: log(f"Banner -> {b}"))
@@ -618,11 +660,13 @@ def update_progress():
         finish_time = round(time.time() - start_time, 2)
         progress["value"] = 100 if not stop_scan else progress["value"]
 
+        total_score = min(ip_risk_score, 100) + min(port_risk_score, 100)
+
         log("")
         log("Scan Finished" if not stop_scan else "Scan Stopped")
         log(f"Open Ports: {open_port_count}")
-        log(f"Port Risk Score: {port_risk_score} /100")
-        log(f"Total Risk Score: {min(ip_risk_score, 100) + min(port_risk_score, 100)} / 200")
+        log(f"Port Risk Score: {port_risk_score} / 100")
+        log(f"Total Risk Score: {total_score} / 200")
         log(f"Time: {finish_time}s")
 
         summary = build_scan_summary()
@@ -796,7 +840,7 @@ def check_password():
         score += 1
     if re.search("[0-9]", pw):
         score += 1
-    if re.search("[!@#$%^&*()_+\\-=\\[\\]{};':\"\\\\|,.<>/?]", pw):
+    if re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>/?]", pw):
         score += 1
 
     if score <= 2:
@@ -907,7 +951,6 @@ root.title(f"Cyber Security Toolkit v{CURRENT_VERSION}")
 root.geometry("980x860")
 root.configure(bg="black")
 
-# TITLE
 tk.Label(
     root,
     text="Cyber Security Toolkit",
@@ -929,7 +972,7 @@ open_ports_value = tk.Label(dashboard, text="0", bg="black", fg="white")
 open_ports_value.grid(row=0, column=3, padx=10)
 
 tk.Label(dashboard, text="Risk Score", bg="black", fg="#00ff00").grid(row=0, column=4, padx=10, pady=5)
-risk_score_value = tk.Label(dashboard, text="0 / 100", bg="black", fg="white")
+risk_score_value = tk.Label(dashboard, text="0 / 200", bg="black", fg="white")
 risk_score_value.grid(row=0, column=5, padx=10)
 
 tk.Label(dashboard, text="Suspicious", bg="black", fg="#00ff00").grid(row=1, column=0, padx=10, pady=5)
