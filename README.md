@@ -74,7 +74,7 @@ Cyber Security Tool은 사용자가 자신의 환경을 직접 점검하고, 기
 <img width="1226" height="1025" alt="image" src="https://github.com/user-attachments/assets/4153811a-50bd-496e-b75e-bb8e34f473e8" />
 
 # 스캔중 화면
-<img width="1135" height="744" alt="image" src="https://github.com/user-attachments/assets/9ee8fe14-0168-4187-bf10-ef538aa0388f" />
+<img width="1202" height="876" alt="image" src="https://github.com/user-attachments/assets/061a8a86-e84f-477c-8b4b-2d8c1363f15e" />
 
 # 리포트 화면
 <img width="1919" height="869" alt="image" src="https://github.com/user-attachments/assets/a96a0e72-e860-472e-a92f-fea3e7c3d596" />
