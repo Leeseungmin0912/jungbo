@@ -70,27 +70,25 @@ Cyber Security Tool은 사용자가 자신의 환경을 직접 점검하고, 기
 - requests
 - hashlib
 
-# 초기 실행화면
+## 실행 화면
+
+### 초기 실행 화면
 <img width="1226" height="1025" alt="image" src="https://github.com/user-attachments/assets/4153811a-50bd-496e-b75e-bb8e34f473e8" />
 
-# 스캔중 화면
+### 스캔 중 화면
 <img width="1202" height="876" alt="image" src="https://github.com/user-attachments/assets/061a8a86-e84f-477c-8b4b-2d8c1363f15e" />
 
-# 리포트 화면
+### 리포트 화면
 <img width="1919" height="869" alt="image" src="https://github.com/user-attachments/assets/a96a0e72-e860-472e-a92f-fea3e7c3d596" />
 <img width="1830" height="703" alt="image" src="https://github.com/user-attachments/assets/8685c5d0-2b41-451d-9d79-3e60c534bb85" />
 
-# 결과 화면
+### 결과 화면
 <img width="1215" height="874" alt="image" src="https://github.com/user-attachments/assets/7627ed43-c697-4bd7-8a98-6e1379f81ffc" />
 
-
-
 ## 실행 방법
+1. 저장소에서 `Tool.exe` 파일을 다운로드합니다.
+2. 다운로드한 실행 파일을 실행합니다.
 
-```bash
-Tool.exe 다운로드
-```
-```
-이 프로그램은 학습 및 자가 점검 목적의 프로젝트입니다.
+## 주의사항
+이 프로그램은 학습 및 자가 점검 목적의 프로젝트입니다.  
 허가받지 않은 대상이나 외부 시스템에 무단으로 사용하는 행위는 지양해야 합니다.
-```
