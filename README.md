@@ -71,7 +71,7 @@ Cyber Security Tool은 사용자가 자신의 환경을 직접 점검하고, 기
 - hashlib
 
 # 초기 실행화면
-<img width="1217" height="1017" alt="image" src="https://github.com/user-attachments/assets/f215c81e-45b1-428f-9353-21a48aa0a260" />
+<img width="1226" height="1025" alt="image" src="https://github.com/user-attachments/assets/4153811a-50bd-496e-b75e-bb8e34f473e8" />
 
 # 스캔중 화면
 <img width="1135" height="744" alt="image" src="https://github.com/user-attachments/assets/9ee8fe14-0168-4187-bf10-ef538aa0388f" />
