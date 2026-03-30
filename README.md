@@ -70,8 +70,21 @@ Cyber Security Tool은 사용자가 자신의 환경을 직접 점검하고, 기
 - requests
 - hashlib
 
+# 초기 실행화면
+<img width="1217" height="1017" alt="image" src="https://github.com/user-attachments/assets/f215c81e-45b1-428f-9353-21a48aa0a260" />
+
+# 스캔중 화면
+<img width="1135" height="744" alt="image" src="https://github.com/user-attachments/assets/9ee8fe14-0168-4187-bf10-ef538aa0388f" />
+
+# 리포트 화면
+<img width="1919" height="869" alt="image" src="https://github.com/user-attachments/assets/a96a0e72-e860-472e-a92f-fea3e7c3d596" />
+<img width="1830" height="703" alt="image" src="https://github.com/user-attachments/assets/8685c5d0-2b41-451d-9d79-3e60c534bb85" />
+
+# 결과 화면
+<img width="1211" height="922" alt="image" src="https://github.com/user-attachments/assets/be324c59-4c86-4439-96e4-b45ee6813324" />
+
+
 ## 실행 방법
 
-### Python으로 실행
 ```bash
 Tool.exe 다운로드
